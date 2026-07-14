@@ -1,0 +1,6 @@
+[
+  { "partner_id": "PART01", "partner_name": "Café Central" },
+  { "partner_id": "PART02", "partner_name": "Gasolinera Express" },
+  { "partner_id": "PART03", "partner_name": "Tienda Moda" },
+  { "partner_id": "PART04", "partner_name": "Restaurante Sabores" }
+]
