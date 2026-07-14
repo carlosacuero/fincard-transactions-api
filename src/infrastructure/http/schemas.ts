@@ -47,6 +47,17 @@ export const uploadSchema = {
     'Valida formato y contenido, aplica las reglas de negocio RN-01..RN-04, almacena las ' +
     'transacciones válidas en S3 (emulado) y registra la catalogación en Glue (emulado).',
   consumes: ['multipart/form-data'],
+  body: {
+    type: 'object',
+    required: ['file'],
+    properties: {
+      file: {
+        type: 'string',
+        format: 'binary',
+        description: 'Archivo CSV de transacciones (solo se admiten archivos .csv)'
+      }
+    }
+  },
   response: {
     201: {
       description: 'Archivo procesado correctamente',

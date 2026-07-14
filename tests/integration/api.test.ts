@@ -89,6 +89,35 @@ describe('API de FinCard (integración)', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it('POST upload devuelve 400 en español si la solicitud no es multipart', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/upload',
+      payload: { foo: 'bar' }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('multipart/form-data');
+  });
+
+  it('POST upload devuelve 400 si el archivo no es CSV', async () => {
+    const form = new FormData();
+    form.append('file', Buffer.from('{}'), { filename: 'data.json', contentType: 'application/json' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/transactions/upload',
+      payload: form,
+      headers: form.getHeaders()
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toContain('Solo se admiten archivos CSV');
+  });
+
+  it('devuelve 404 en español para rutas inexistentes', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/v1/no-existe' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().message).toContain('no existe');
+  });
+
   it('registra la catalogación en el Glue Data Catalog emulado', async () => {
     await uploadCsv(app, csv('TXN001,MEM001,PART01,150,0,2026-07-01,Café Central'));
     const catalog = JSON.parse(await readFile(join(baseDir, 'data', 'glue-catalog.json'), 'utf-8'));
