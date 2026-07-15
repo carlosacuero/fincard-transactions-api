@@ -11,16 +11,7 @@
 --   * Recomendado: DISTKEY(partner_id) y SORTKEY(transaction_date) en la tabla,
 --     de modo que el filtro por fecha por bloques y el GROUP BY por aliado
 --     no requiera redistribución de datos entre nodos.
---
--- Rango de fechas — patrón de intervalo semiabierto [inicio, fin):
---   * Límite inferior => ">=" (mayor o IGUAL): incluye el primer día del mes
---     inicial (00:00:00). Si se usara ">" estricto se perderían las
---     transacciones ocurridas exactamente en el instante de inicio del mes.
---   * Límite superior => "<" (menor ESTRICTO): excluye el mes actual, que
---     todavía está en curso (incompleto). Así se liquidan solo los 12 meses
---     COMPLETOS anteriores: [mes actual - 12 meses, mes actual).
---   Este patrón >= ... < es más seguro que BETWEEN porque no depende de si la
---   columna es DATE o TIMESTAMP ni del último instante del día.
+
 SELECT
     t.partner_id,
     t.partner_name,
@@ -34,11 +25,6 @@ WHERE t.transaction_date >= DATEADD('month', -12, DATE_TRUNC('month', CURRENT_DA
 GROUP BY t.partner_id, t.partner_name, TO_CHAR(t.transaction_date, 'YYYY-MM')
 ORDER BY year_month DESC, t.partner_id;
 
--- Variante: si además se quiere incluir el mes actual EN CURSO (parcial),
--- cambiar el límite superior por el inicio del próximo mes y ajustar el
--- inferior a -11 meses para seguir cubriendo 12 meses en total:
---   WHERE t.transaction_date >= DATEADD('month', -11, DATE_TRUNC('month', CURRENT_DATE))
---     AND t.transaction_date <  DATEADD('month',  1, DATE_TRUNC('month', CURRENT_DATE))
 
 -- -----------------------------------------------------------------------------
 -- Consulta 2: Liquidación mensual optimizada para Athena (S3 + Parquet)
@@ -46,11 +32,7 @@ ORDER BY year_month DESC, t.partner_id;
 -- Se asume la tabla particionada por year y month (ver plan de particionamiento
 -- más abajo). El filtro sobre las COLUMNAS DE PARTICIÓN evita escanear los
 -- prefijos de S3 que no correspondan al rango consultado (partition pruning).
---
--- Se agrupa solo por partner_id (y por el mes); partner_name se resuelve con
--- MAX() para NO agrupar por un string largo. El mismo rango de 12 meses
--- completos de la Consulta 1 se expresa aquí sobre el entero YYYYMM derivado de
--- las particiones, con límite inferior ">=" y superior "<" (excluye mes actual).
+
 SELECT
     partner_id,
     MAX(partner_name)                                 AS partner_name,
