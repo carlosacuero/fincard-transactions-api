@@ -34,6 +34,8 @@ docker run -p 3000:3000 fincard-loyalty
 
 ### Pruebas
 
+Pruebas unitarias con una cobertura mayor al 80% 
+
 ```bash
 npm test                 # unitarias + integración
 npm run test:coverage    # con reporte de cobertura (umbral mínimo: 80%)
@@ -169,14 +171,6 @@ src/
   un rol IAM por federación OIDC — **no se guardan credenciales AWS en GitHub**.
 - **IaC con Terraform**: todo lo anterior está definido en `infra/terraform/`.
 
-### Costo estimado de la demo (us-east-1, 4 días encendida)
-
-| Recurso | Costo aprox. |
-| ------- | ------------ |
-| Fargate 0.25 vCPU / 0.5 GB (24/7 x 4 días) | ~$1.20 |
-| ECR (< 500 MB, capa gratuita) | $0 |
-| S3 + Glue + CloudWatch (volumen de prueba) | < $0.50 |
-| **Total** | **~$1-2 USD** |
 
 ### Requisitos previos
 
@@ -344,7 +338,6 @@ entorno real de FinCard se recomienda evolucionar hacia lo siguiente:
 | Disponibilidad | 1 tarea, 1 AZ | Multi-AZ + auto scaling |
 | Persistencia | JSON en disco (efímero) | DynamoDB o RDS/Aurora |
 | Estado Terraform | Local | S3 + DynamoDB lock |
-| Costo | ~$1-2 (4 días) | Variable (mayor, según SLA) |
 
 ## SQL Avanzado
 
