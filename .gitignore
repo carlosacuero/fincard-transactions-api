@@ -45,3 +45,7 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
+
+# Terraform
+infra/terraform/.terraform/
+*.tfstate*

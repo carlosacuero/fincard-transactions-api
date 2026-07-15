@@ -1,0 +1,74 @@
+# Despliegue continuo a AWS (ECS Fargate) usando OIDC — sin credenciales guardadas.
+# Requiere haber aplicado infra/terraform (crea el rol IAM y el ECR).
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [feature/aws-deployment, main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # necesario para OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: fincard-loyalty
+  ECS_CLUSTER: fincard-loyalty
+  ECS_SERVICE: fincard-loyalty
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA::7}"
+          docker build -t "$IMAGE" -t "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:latest" .
+          docker push "$IMAGE"
+          docker push "${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:latest"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Render task definition with new image
+        run: |
+          aws ecs describe-task-definition --task-definition "$ECR_REPOSITORY" \
+            --query 'taskDefinition' > taskdef-full.json
+          jq --arg IMAGE "$IMAGE" '
+            .containerDefinitions[0].image = $IMAGE
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)
+          ' taskdef-full.json > taskdef.json
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: taskdef.json
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true

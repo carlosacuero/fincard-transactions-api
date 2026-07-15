@@ -6,7 +6,11 @@ import { buildServer } from './infrastructure/http/server';
 const PORT = Number(process.env.PORT ?? 3000);
 
 async function main(): Promise<void> {
-  const app = await buildServer({ logger: true });
+  const app = await buildServer({
+    logger: true,
+    storageDriver: process.env.STORAGE_DRIVER === 'aws' ? 'aws' : 'local',
+    s3Bucket: process.env.S3_BUCKET
+  });
   await app.listen({ port: PORT, host: '0.0.0.0' });
 }
 

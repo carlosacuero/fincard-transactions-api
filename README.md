@@ -150,17 +150,54 @@ src/
    (`storage/`) y Glue con un JSON (`data/glue-catalog.json`), tal como permite
    el enunciado. Los puertos aíslan esta decisión.
 
-## Despliegue en AWS (siguiente fase)
+## Despliegue en AWS (demo temporal)
 
-El diseño está preparado para desplegar en AWS:
+> **Nota importante**: este despliegue es una **demostración temporal (3-4 días)**
+> cuyo único objetivo es mostrar que el código funciona desplegado en AWS.
+> No es una configuración de producción: se prioriza el costo mínimo.
 
-- **Contenedor**: el `Dockerfile` multi-stage permite desplegar en ECS Fargate
-  (o App Runner) detrás de un ALB.
-- **Adaptadores reales**: `S3FileStorage` (AWS SDK v3) y `GlueDataCatalog`
-  reemplazan a los locales vía configuración.
-- **IaC**: se sugiere Terraform/CDK con: bucket S3 `fincard-transactions`,
-  base de datos Glue `fincard_loyalty`, servicio ECS y roles IAM de mínimo
-  privilegio.
+### Arquitectura del despliegue
+
+- **ECS Fargate** (1 tarea de 0.25 vCPU / 0.5 GB, el tamaño mínimo) con **IP
+  pública directa, sin ALB**: un Application Load Balancer costaría ~$18/mes y
+  no aporta valor para una demo de pocos días.
+- **ECR** para la imagen Docker (`Dockerfile` multi-stage del repo).
+- **S3 y Glue Data Catalog reales**: la aplicación usa los adaptadores
+  `S3FileStorage` y `GlueDataCatalog` (activados con `STORAGE_DRIVER=aws`);
+  en local se siguen usando los emulados.
+- **GitHub Actions + OIDC**: el workflow `.github/workflows/deploy.yml` asume
+  un rol IAM por federación OIDC — **no se guardan credenciales AWS en GitHub**.
+- **IaC con Terraform**: todo lo anterior está definido en `infra/terraform/`.
+
+### Costo estimado de la demo (us-east-1, 4 días encendida)
+
+| Recurso | Costo aprox. |
+| ------- | ------------ |
+| Fargate 0.25 vCPU / 0.5 GB (24/7 x 4 días) | ~$1.20 |
+| ECR (< 500 MB, capa gratuita) | $0 |
+| S3 + Glue + CloudWatch (volumen de prueba) | < $0.50 |
+| **Total** | **~$1-2 USD** |
+
+### Pasos de despliegue
+
+```bash
+cd infra/terraform
+terraform init
+terraform apply            # crea ECR, ECS, S3, Glue (permisos), rol OIDC
+
+# Configurar en GitHub el variable AWS_DEPLOY_ROLE_ARN con el output:
+terraform output github_actions_role_arn
+```
+
+Después, cada push construye la imagen, la publica en ECR y actualiza el
+servicio ECS. La URL pública es la IP de la tarea Fargate en el puerto 3000
+(cambia si la tarea se reinicia — limitación aceptada al no usar ALB).
+
+### Al terminar la demo
+
+```bash
+cd infra/terraform && terraform destroy   # elimina TODO y el costo queda en $0
+```
 
 ## SQL Avanzado
 
