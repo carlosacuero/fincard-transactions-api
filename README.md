@@ -178,26 +178,173 @@ src/
 | S3 + Glue + CloudWatch (volumen de prueba) | < $0.50 |
 | **Total** | **~$1-2 USD** |
 
-### Pasos de despliegue
+### Requisitos previos
+
+- Cuenta AWS y credenciales con permisos para crear ECR, ECS, S3, IAM, Glue,
+  EC2 (VPC/SG) y CloudWatch (para el bootstrap inicial se usó `AdministratorAccess`).
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
+- [Docker](https://docs.docker.com/get-docker/)
+- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
+  configurada (`aws configure`).
+
+### Paso 1 — Crear la infraestructura con Terraform
 
 ```bash
 cd infra/terraform
 terraform init
-terraform apply            # crea ECR, ECS, S3, Glue (permisos), rol OIDC
-
-# Configurar en GitHub el variable AWS_DEPLOY_ROLE_ARN con el output:
-terraform output github_actions_role_arn
+terraform apply            # crea ECR, ECS, S3, CloudWatch, rol OIDC y permisos
 ```
 
-Después, cada push construye la imagen, la publica en ECR y actualiza el
-servicio ECS. La URL pública es la IP de la tarea Fargate en el puerto 3000
-(cambia si la tarea se reinicia — limitación aceptada al no usar ALB).
+Salidas relevantes (`terraform output`):
 
-### Al terminar la demo
+| Output | Uso |
+| ------ | --- |
+| `ecr_repository_url` | Destino de la imagen Docker |
+| `s3_bucket` | Bucket real de transacciones |
+| `ecs_cluster` / `ecs_service` | Cluster y servicio Fargate |
+| `github_actions_role_arn` | Rol que asume GitHub Actions vía OIDC |
+
+### Paso 2 — Publicar la primera imagen
+
+La primera imagen debe subirse manualmente (el servicio ECS arranca vacío):
+
+```bash
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+REG=$ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $REG
+docker build -t $REG/fincard-loyalty:latest .
+docker push $REG/fincard-loyalty:latest
+aws ecs update-service --cluster fincard-loyalty --service fincard-loyalty --force-new-deployment
+```
+
+### Paso 3 — Obtener la URL pública
+
+Al no usar ALB, la URL es la **IP pública de la tarea Fargate** en el puerto 3000
+(cambia cada vez que la tarea se reinicia):
+
+```bash
+TASK=$(aws ecs list-tasks --cluster fincard-loyalty --service-name fincard-loyalty \
+  --desired-status RUNNING --query 'taskArns[0]' --output text)
+ENI=$(aws ecs describe-tasks --cluster fincard-loyalty --tasks $TASK \
+  --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" --output text)
+aws ec2 describe-network-interfaces --network-interface-ids $ENI \
+  --query 'NetworkInterfaces[0].Association.PublicIp' --output text
+# -> http://<IP>:3000  |  Swagger: http://<IP>:3000/docs
+```
+
+### Paso 4 — CI/CD automático con GitHub Actions (OIDC)
+
+El workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) hace
+`test → lint → typecheck → build → push a ECR → deploy a ECS` en cada push a
+`main` o `feature/aws-deployment`, autenticándose por **OIDC** (sin
+credenciales guardadas). El ARN del rol va incrustado en el workflow (un ARN de
+rol no es información sensible) y puede sobreescribirse creando la variable de
+repositorio `AWS_DEPLOY_ROLE_ARN`.
+
+### Cómo probar el despliegue
+
+```bash
+BASE=http://<IP>:3000
+
+# Swagger UI
+open $BASE/docs
+
+# Cargar un CSV
+curl -F "file=@sample-data/transactions-sample.csv;type=text/csv" \
+  $BASE/api/v1/transactions/upload
+
+# Consultar la liquidación de un aliado
+curl "$BASE/api/v1/settlements/PART01?from=2026-01-01&to=2026-01-31"
+```
+
+Un upload válido crea el objeto en S3 (`{year}/{month}/{partner_id}/{batchId}.csv`
+y `manifests/{batchId}.json`) y actualiza la tabla Glue `fincard_loyalty.transactions`.
+
+### Al terminar la demo (obligatorio)
 
 ```bash
 cd infra/terraform && terraform destroy   # elimina TODO y el costo queda en $0
 ```
+
+Además, revoca el permiso temporal del usuario de bootstrap:
+
+```bash
+aws iam detach-user-policy --user-name <usuario> \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+```
+
+---
+
+## Recomendaciones para un despliegue "serio" (producción)
+
+La arquitectura anterior está optimizada para una **demo barata**. Para un
+entorno real de FinCard se recomienda evolucionar hacia lo siguiente:
+
+### 1. Exposición y red
+
+- **Application Load Balancer (ALB) + HTTPS**: DNS estable, TLS con **ACM**,
+  health checks y balanceo entre varias tareas. Elimina la limitación de la IP
+  pública cambiante.
+- **VPC dedicada**: tareas ECS en **subredes privadas** + **NAT Gateway** (o
+  VPC endpoints para S3/ECR y ahorrar el NAT), en lugar de la VPC por defecto
+  con IP pública.
+- **WAF** delante del ALB y **API Gateway** si se requiere throttling,
+  API keys o cuotas por consumidor.
+
+### 2. Cómputo y disponibilidad
+
+- **Multi-AZ** con `desired_count >= 2` y **auto scaling** por CPU/memoria o
+  número de peticiones.
+- Alternativas según el patrón de carga: **AWS App Runner** (más simple, escala
+  a cero) o **Lambda + API Gateway** (picos intermitentes, pago por uso). ECS
+  Fargate sigue siendo buena opción para carga sostenida.
+
+### 3. Persistencia (punto más importante)
+
+- Hoy el repositorio de transacciones usa **JSON en disco** (efímero en
+  Fargate: se pierde al reiniciar la tarea). Debe reemplazarse por una
+  implementación real del puerto `TransactionRepository`:
+  - **Amazon DynamoDB** (serverless, ideal para escrituras por lote y consultas
+    por `partner_id`/fecha con índices secundarios), o
+  - **Amazon RDS/Aurora PostgreSQL** si se necesitan consultas relacionales
+    complejas y transaccionalidad fuerte.
+- El data lake analítico se mantiene: **S3 (Parquet particionado) + Glue +
+  Athena/Redshift** para las liquidaciones y el SQL avanzado ya incluido.
+
+### 4. Seguridad
+
+- **Roles IAM de mínimo privilegio** por servicio (ya aplicado parcialmente).
+- Secretos en **AWS Secrets Manager** / **SSM Parameter Store**, nunca en el
+  repo ni en variables de texto plano.
+- **Cifrado**: S3 con SSE-KMS, cifrado en tránsito (TLS) y en reposo para la BD.
+- **VPC endpoints** para que el tráfico a S3/ECR no salga a Internet.
+
+### 5. Observabilidad y operación
+
+- **CloudWatch** con métricas, **alarmas** y **dashboards**; retención de logs
+  mayor a los 7 días de la demo.
+- **AWS X-Ray** para trazas distribuidas.
+- **AWS Budgets + Cost Anomaly Detection** para alertas de costo.
+
+### 6. Entrega y estado de Terraform
+
+- **Backend remoto de Terraform** en **S3 + DynamoDB lock** (hoy el estado es
+  local) para trabajo en equipo y bloqueo de concurrencia.
+- Separar **entornos** (dev/staging/prod) con workspaces o carpetas y
+  variables por entorno.
+- Estrategia de **despliegue azul/verde** con
+  `amazon-ecs-deploy-task-definition` + CodeDeploy para cero downtime.
+
+### Comparativa rápida
+
+| Aspecto | Demo actual | Producción recomendada |
+| ------- | ----------- | ---------------------- |
+| Exposición | IP pública directa (cambiante) | ALB + HTTPS (ACM) + DNS |
+| Red | VPC por defecto | VPC dedicada, subredes privadas |
+| Disponibilidad | 1 tarea, 1 AZ | Multi-AZ + auto scaling |
+| Persistencia | JSON en disco (efímero) | DynamoDB o RDS/Aurora |
+| Estado Terraform | Local | S3 + DynamoDB lock |
+| Costo | ~$1-2 (4 días) | Variable (mayor, según SLA) |
 
 ## SQL Avanzado
 
