@@ -16,6 +16,9 @@ env:
   ECR_REPOSITORY: fincard-loyalty
   ECS_CLUSTER: fincard-loyalty
   ECS_SERVICE: fincard-loyalty
+  # ARN del rol OIDC (un ARN de rol no es secreto). Puede sobreescribirse con
+  # la variable de repositorio AWS_DEPLOY_ROLE_ARN si se prefiere.
+  AWS_DEPLOY_ROLE_ARN: arn:aws:iam::955179596803:role/fincard-loyalty-github-actions
 
 jobs:
   test:
@@ -40,7 +43,7 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN || env.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
